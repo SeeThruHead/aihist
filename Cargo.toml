@@ -11,6 +11,9 @@ path = "src/main.rs"
 name = "aihist"
 path = "src/lib.rs"
 
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 [dependencies]
 anyhow = "1"
 chrono = { version = "0.4", features = ["serde"] }

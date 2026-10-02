@@ -2,6 +2,11 @@ use std::path::PathBuf;
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 
+#[cfg(unix)]
+fn reset_sigpipe() {
+    unsafe { libc::signal(libc::SIGPIPE, libc::SIG_DFL); }
+}
+
 use aihist::commands::{index, search, sessions, show, stats, tools};
 use aihist::db::Db;
 use aihist::domain::{Filter, Tool};
@@ -84,6 +89,8 @@ fn parse_tool(s: &str) -> Result<Tool, String> {
 }
 
 fn main() -> Result<()> {
+    #[cfg(unix)]
+    reset_sigpipe();
     let cli = Cli::parse();
     let db_path = cli.db.unwrap_or_else(default_db_path);
 
