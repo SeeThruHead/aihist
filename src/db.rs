@@ -46,31 +46,81 @@ CREATE TABLE IF NOT EXISTS turn (
 CREATE INDEX IF NOT EXISTS turn_session ON turn(session_id, seq);
 CREATE INDEX IF NOT EXISTS turn_tool    ON turn(tool_name) WHERE tool_name IS NOT NULL;
 
+CREATE TABLE IF NOT EXISTS turn_chunk (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  session_id TEXT    NOT NULL,
+  turn_seq   INTEGER NOT NULL,
+  chunk_seq  INTEGER NOT NULL,
+  content    TEXT    NOT NULL,
+  UNIQUE(session_id, turn_seq, chunk_seq)
+);
+
+CREATE INDEX IF NOT EXISTS chunk_turn ON turn_chunk(session_id, turn_seq);
+
 CREATE VIRTUAL TABLE IF NOT EXISTS turn_fts USING fts5(
   content,
-  tool_name,
-  content=turn,
+  content=turn_chunk,
   content_rowid=id,
   tokenize='unicode61 remove_diacritics 1'
 );
 
-CREATE TRIGGER IF NOT EXISTS turn_ai AFTER INSERT ON turn BEGIN
-  INSERT INTO turn_fts(rowid, content, tool_name)
-  VALUES (new.id, new.content, COALESCE(new.tool_name, ''));
+CREATE TRIGGER IF NOT EXISTS chunk_ai AFTER INSERT ON turn_chunk BEGIN
+  INSERT INTO turn_fts(rowid, content) VALUES (new.id, new.content);
 END;
 
-CREATE TRIGGER IF NOT EXISTS turn_ad AFTER DELETE ON turn BEGIN
-  INSERT INTO turn_fts(turn_fts, rowid, content, tool_name)
-  VALUES ('delete', old.id, old.content, COALESCE(old.tool_name, ''));
+CREATE TRIGGER IF NOT EXISTS chunk_ad AFTER DELETE ON turn_chunk BEGIN
+  INSERT INTO turn_fts(turn_fts, rowid, content) VALUES ('delete', old.id, old.content);
 END;
 
-CREATE TRIGGER IF NOT EXISTS turn_au AFTER UPDATE ON turn BEGIN
-  INSERT INTO turn_fts(turn_fts, rowid, content, tool_name)
-  VALUES ('delete', old.id, old.content, COALESCE(old.tool_name, ''));
-  INSERT INTO turn_fts(rowid, content, tool_name)
-  VALUES (new.id, new.content, COALESCE(new.tool_name, ''));
+CREATE TRIGGER IF NOT EXISTS chunk_au AFTER UPDATE ON turn_chunk BEGIN
+  INSERT INTO turn_fts(turn_fts, rowid, content) VALUES ('delete', old.id, old.content);
+  INSERT INTO turn_fts(rowid, content) VALUES (new.id, new.content);
 END;
 ";
+
+const CHUNK_THRESHOLD: usize = 800;
+const CHUNK_SIZE: usize = 700;
+const CHUNK_OVERLAP: usize = 150;
+
+fn chunk_content(content: &str) -> Vec<String> {
+    let chars: Vec<char> = content.chars().collect();
+    let total = chars.len();
+    if total <= CHUNK_THRESHOLD {
+        return vec![content.to_owned()];
+    }
+    let step = CHUNK_SIZE - CHUNK_OVERLAP;
+    (0..)
+        .map(|i| i * step)
+        .take_while(|&start| start < total)
+        .map(|start| chars[start..(start + CHUNK_SIZE).min(total)].iter().collect())
+        .collect()
+}
+
+fn migrate_v2(conn: &Connection) -> Result<(), DbError> {
+    let chunk_exists: bool = conn.query_row(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='turn_chunk'",
+        [],
+        |r| r.get::<_, i64>(0),
+    ).unwrap_or(0) > 0;
+    if chunk_exists {
+        return Ok(());
+    }
+    let session_exists: bool = conn.query_row(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='session'",
+        [],
+        |r| r.get::<_, i64>(0),
+    ).unwrap_or(0) > 0;
+    conn.execute_batch("
+        DROP TRIGGER IF EXISTS turn_ai;
+        DROP TRIGGER IF EXISTS turn_ad;
+        DROP TRIGGER IF EXISTS turn_au;
+        DROP TABLE IF EXISTS turn_fts;
+    ")?;
+    if session_exists {
+        conn.execute_batch("UPDATE session SET indexed_at = 0")?;
+    }
+    Ok(())
+}
 
 pub struct Db {
     conn: Connection,
@@ -81,7 +131,8 @@ impl Db {
         let conn = Connection::open(path)?;
         conn.query_row("PRAGMA journal_mode=WAL", [], |_| Ok(()))?;
         conn.pragma_update(None, "foreign_keys", true)?;
-        conn.query_row("PRAGMA mmap_size=536870912", [], |_| Ok(()))?; // 512 MiB
+        conn.query_row("PRAGMA mmap_size=536870912", [], |_| Ok(()))?;
+        migrate_v2(&conn)?;
         conn.execute_batch(INIT_SQL)?;
         Ok(Db { conn })
     }
@@ -110,16 +161,30 @@ impl Db {
     pub fn upsert_turns(&mut self, turns: &[Turn]) -> Result<(), DbError> {
         let tx = self.conn.transaction()?;
         {
-            let mut stmt = tx.prepare_cached(
+            let mut stmt_turn = tx.prepare_cached(
                 "INSERT OR REPLACE INTO turn (session_id,seq,role,tool_name,tool_input,content,ts,tokens)
                  VALUES (?1,?2,?3,?4,?5,?6,?7,?8)",
             )?;
-            for t in turns {
-                stmt.execute(params![
+            let mut stmt_del = tx.prepare_cached(
+                "DELETE FROM turn_chunk WHERE session_id=?1 AND turn_seq=?2",
+            )?;
+            let mut stmt_chunk = tx.prepare_cached(
+                "INSERT INTO turn_chunk (session_id, turn_seq, chunk_seq, content) VALUES (?1,?2,?3,?4)",
+            )?;
+            turns.iter().try_for_each(|t| -> Result<(), DbError> {
+                stmt_turn.execute(params![
                     t.session_id, t.seq, t.role.as_str(),
                     t.tool_name, t.tool_input, t.content, t.ts, t.tokens
                 ])?;
-            }
+                stmt_del.execute(params![t.session_id, t.seq])?;
+                chunk_content(&t.content)
+                    .into_iter()
+                    .enumerate()
+                    .try_for_each(|(i, chunk)| -> Result<(), DbError> {
+                        stmt_chunk.execute(params![t.session_id, t.seq, i as i32, chunk])?;
+                        Ok(())
+                    })
+            })?;
         }
         tx.commit()?;
         Ok(())
@@ -198,13 +263,14 @@ impl Db {
         let tool = filter.tool.as_ref().map(|t| t.as_str());
 
         let mut stmt = self.conn.prepare(
-            "SELECT t.session_id, s.tool, t.seq, t.role, t.tool_name,
+            "SELECT tc.session_id, s.tool, tc.turn_seq, t.role, t.tool_name,
                     snippet(turn_fts, 0, '[', ']', '…', 24) AS snippet,
                     turn_fts.rank,
                     s.started_at, s.project
              FROM turn_fts
-             JOIN turn t    ON t.id = turn_fts.rowid
-             JOIN session s ON s.id = t.session_id
+             JOIN turn_chunk tc ON tc.id = turn_fts.rowid
+             JOIN turn t        ON t.session_id = tc.session_id AND t.seq = tc.turn_seq
+             JOIN session s     ON s.id = tc.session_id
              WHERE turn_fts MATCH ?1
                AND (?3 IS NULL OR s.tool = ?3)
                AND (?4 IS NULL OR s.started_at >= ?4)
@@ -319,6 +385,10 @@ mod tests {
             ts: Some(1_000_000 + seq as i64 * 1000),
             tokens: 10,
         }
+    }
+
+    fn long_content(n: usize) -> String {
+        "word ".repeat(n)
     }
 
     #[test]
@@ -500,5 +570,46 @@ mod tests {
 
         let turns = db.turns("sess-1").unwrap();
         assert!(turns.is_empty());
+    }
+
+    #[test]
+    fn short_turn_produces_single_chunk() {
+        let content = "short content";
+        let chunks = chunk_content(content);
+        assert_eq!(chunks.len(), 1);
+        assert_eq!(chunks[0], content);
+    }
+
+    #[test]
+    fn long_turn_produces_multiple_overlapping_chunks() {
+        let content = long_content(300);
+        let chunks = chunk_content(&content);
+        assert!(chunks.len() > 1);
+        let step = CHUNK_SIZE - CHUNK_OVERLAP;
+        let chars: Vec<char> = content.chars().collect();
+        let expected_first: String = chars[..CHUNK_SIZE].iter().collect();
+        let expected_second: String = chars[step..step + CHUNK_SIZE].iter().collect();
+        assert_eq!(chunks[0], expected_first);
+        assert_eq!(chunks[1], expected_second);
+    }
+
+    #[test]
+    fn chunked_fts_finds_match_in_long_turn() {
+        let mut db = Db::open_in_memory().unwrap();
+        db.upsert_session(&make_session("sess-1", Tool::Claude)).unwrap();
+        let prefix = "a ".repeat(400);
+        let content = format!("{prefix}crystallize endpoint {}", "b ".repeat(200));
+        db.upsert_turns(&[make_turn("sess-1", 0, Role::Assistant, &content)]).unwrap();
+
+        let hits = db.search("crystallize", &Filter::default()).unwrap();
+        assert_eq!(hits.len(), 1);
+        assert!(hits[0].snippet.contains("crystallize") || hits[0].snippet.contains("[crystallize]"));
+    }
+
+    #[test]
+    fn chunk_content_boundary_turn_is_single_chunk() {
+        let content = "x".repeat(CHUNK_THRESHOLD);
+        let chunks = chunk_content(&content);
+        assert_eq!(chunks.len(), 1);
     }
 }
