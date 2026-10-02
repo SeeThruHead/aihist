@@ -7,7 +7,7 @@ fn reset_sigpipe() {
     unsafe { libc::signal(libc::SIGPIPE, libc::SIG_DFL); }
 }
 
-use aihist::commands::{index, search, sessions, show, stats, tools};
+use aihist::commands::{index, install_skills, search, sessions, show, stats, tools};
 use aihist::db::Db;
 use aihist::domain::{Filter, Tool};
 
@@ -82,6 +82,12 @@ enum Command {
         #[arg(help = "Narrow to a specific session ID")]
         session_id: Option<String>,
     },
+
+    #[command(about = "Install aihist skills into ~/.agents/skills/")]
+    InstallSkills {
+        #[arg(long, value_name = "PATH", help = "Override skills root (default: ~/.agents/skills)")]
+        skills_dir: Option<std::path::PathBuf>,
+    },
 }
 
 fn parse_tool(s: &str) -> Result<Tool, String> {
@@ -138,6 +144,19 @@ fn main() -> Result<()> {
         Command::Stats { session_id } => {
             let db = Db::open(db_path.to_str().unwrap())?;
             stats::run(&db, session_id.as_deref(), cli.json)?;
+        }
+
+        Command::InstallSkills { skills_dir } => {
+            let installed = install_skills::run(skills_dir.as_deref())?;
+            if cli.json {
+                let json = serde_json::to_string_pretty(&installed)?;
+                println!("{json}");
+            } else {
+                for path in &installed {
+                    println!("installed {path}");
+                }
+                println!("Done. {} skill(s) installed.", installed.len());
+            }
         }
     }
 

@@ -16,11 +16,20 @@ pub struct IndexOptions {
 impl IndexOptions {
     pub fn with_defaults(db_path: PathBuf) -> Self {
         let home = dirs_home();
+        let claude_root = std::env::var("CLAUDE_DIR")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| home.join(".claude/projects"));
+        let codex_root = std::env::var("CODEX_DIR")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| home.join(".codex/sessions"));
+        let opencode_db = std::env::var("OPENCODE_DB")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| home.join(".local/share/opencode/opencode.db"));
         IndexOptions {
             db_path,
-            claude_root: Some(home.join(".claude/projects")),
-            codex_root: Some(home.join(".codex/sessions")),
-            opencode_db: Some(home.join(".local/share/opencode/opencode.db")),
+            claude_root: Some(claude_root),
+            codex_root: Some(codex_root),
+            opencode_db: Some(opencode_db),
             since_mtime_ms: None,
             verbose: false,
         }
