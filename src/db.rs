@@ -79,6 +79,7 @@ impl Db {
         let conn = Connection::open(path)?;
         conn.query_row("PRAGMA journal_mode=WAL", [], |_| Ok(()))?;
         conn.pragma_update(None, "foreign_keys", true)?;
+        conn.query_row("PRAGMA mmap_size=536870912", [], |_| Ok(()))?; // 512 MiB
         conn.execute_batch(INIT_SQL)?;
         Ok(Db { conn })
     }
