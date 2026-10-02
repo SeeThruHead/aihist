@@ -14,8 +14,7 @@ pub struct StatsRow {
 }
 
 pub fn run(db: &Db, session_id: Option<&str>, json: bool) -> Result<()> {
-    let raw = db.stats(session_id)?;
-    let rows: Vec<StatsRow> = raw
+    let rows: Vec<StatsRow> = db.stats(session_id)?
         .into_iter()
         .map(|(tool, sessions, tin, tout, cost)| StatsRow {
             tool: tool.to_string(),
@@ -39,16 +38,15 @@ pub fn run(db: &Db, session_id: Option<&str>, json: bool) -> Result<()> {
 
     println!("{:<12} {:>8} {:>12} {:>12} {:>12} {:>10}", "tool", "sessions", "tokens_in", "tokens_out", "total", "cost_usd");
     println!("{}", "-".repeat(72));
-    let mut total_in = 0i64;
-    let mut total_out = 0i64;
-    let mut total_cost = 0f64;
-    for r in &rows {
+    rows.iter().for_each(|r| {
         println!("{:<12} {:>8} {:>12} {:>12} {:>12} {:>10.4}", r.tool, r.sessions, r.tokens_input, r.tokens_output, r.tokens_total, r.cost_usd);
-        total_in += r.tokens_input;
-        total_out += r.tokens_output;
-        total_cost += r.cost_usd;
-    }
+    });
     println!("{}", "-".repeat(72));
+
+    let (total_in, total_out, total_cost) = rows.iter().fold(
+        (0i64, 0i64, 0f64),
+        |(ti, to, tc), r| (ti + r.tokens_input, to + r.tokens_output, tc + r.cost_usd),
+    );
     println!("{:<12} {:>8} {:>12} {:>12} {:>12} {:>10.4}", "TOTAL", "", total_in, total_out, total_in + total_out, total_cost);
 
     Ok(())

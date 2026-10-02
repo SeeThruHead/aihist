@@ -18,13 +18,7 @@ pub fn run(db: &Db, session_id: &str, mcp_only: bool, json: bool) -> Result<()> 
     let rows: Vec<ToolCallRow> = turns
         .into_iter()
         .filter(|t| t.role == Role::ToolUse)
-        .filter(|t| {
-            if mcp_only {
-                t.tool_name.as_deref().is_some_and(|n| n.starts_with("mcp__"))
-            } else {
-                true
-            }
-        })
+        .filter(|t| !mcp_only || t.tool_name.as_deref().is_some_and(|n| n.starts_with("mcp__")))
         .map(|t| ToolCallRow {
             session_id: t.session_id,
             seq: t.seq,
@@ -45,9 +39,9 @@ pub fn run(db: &Db, session_id: &str, mcp_only: bool, json: bool) -> Result<()> 
         return Ok(());
     }
 
-    for r in &rows {
+    rows.iter().for_each(|r| {
         println!("#{} {} {}", r.seq, r.tool_name, r.tool_input.as_deref().unwrap_or("{}"));
-    }
+    });
 
     Ok(())
 }
@@ -73,9 +67,9 @@ pub fn run_search(db: &Db, filter: &Filter, mcp_only: bool, json: bool) -> Resul
         return Ok(());
     }
 
-    for r in &rows {
+    rows.iter().for_each(|r| {
         println!("{} #{} {}", r.session_id, r.seq, r.tool_name);
-    }
+    });
 
     Ok(())
 }

@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 use anyhow::Result;
 
-use crate::adapters::{claude, codex, opencode};
+use crate::adapters::{claude, codex, opencode, IngestedSession};
 use crate::db::Db;
 
 pub struct IndexOptions {
@@ -40,71 +40,63 @@ fn dirs_home() -> PathBuf {
     std::env::var("HOME").map(PathBuf::from).unwrap_or_else(|_| PathBuf::from("/tmp"))
 }
 
+#[derive(Default)]
 pub struct IndexResult {
     pub ingested: usize,
     pub skipped: usize,
     pub errors: usize,
 }
 
+fn collect_candidates(opts: &IndexOptions) -> (Vec<IngestedSession>, usize) {
+    let since = opts.since_mtime_ms;
+
+    let claude_sessions = opts.claude_root.as_deref()
+        .filter(|p| p.exists())
+        .map(|p| claude::scan(p, since))
+        .unwrap_or_default();
+
+    let codex_sessions = opts.codex_root.as_deref()
+        .filter(|p| p.exists())
+        .map(|p| codex::scan(p, since))
+        .unwrap_or_default();
+
+    let (opencode_sessions, opencode_errors) = opts.opencode_db.as_deref()
+        .filter(|p| p.exists())
+        .map(|p| match opencode::ingest_db(p) {
+            Ok(sessions) => (sessions, 0usize),
+            Err(_) => (vec![], 1usize),
+        })
+        .unwrap_or_default();
+
+    let all = claude_sessions.into_iter()
+        .chain(codex_sessions)
+        .chain(opencode_sessions)
+        .collect();
+
+    (all, opencode_errors)
+}
+
 pub fn run(opts: &IndexOptions) -> Result<IndexResult> {
     let mut db = Db::open(opts.db_path.to_str().unwrap_or(":memory:"))?;
-    let mut ingested = 0usize;
-    let mut skipped = 0usize;
-    let mut errors = 0usize;
+    let (candidates, adapter_errors) = collect_candidates(opts);
 
-    if let Some(root) = &opts.claude_root {
-        if root.exists() {
-            let sessions = claude::scan(root, opts.since_mtime_ms);
-            for s in sessions {
-                if db.has_session(&s.session.id, s.source_mtime_ms)? {
-                    skipped += 1;
-                    continue;
-                }
+    let result = candidates.into_iter().try_fold(
+        IndexResult { errors: adapter_errors, ..Default::default() },
+        |mut acc, s| -> Result<IndexResult> {
+            let already = db.has_session(&s.session.id, s.source_mtime_ms)?;
+            if already {
+                acc.skipped += 1;
+            } else {
                 match index_session(&mut db, s.session, s.turns) {
-                    Ok(_) => ingested += 1,
-                    Err(_) => errors += 1,
+                    Ok(_) => acc.ingested += 1,
+                    Err(_) => acc.errors += 1,
                 }
             }
-        }
-    }
+            Ok(acc)
+        },
+    )?;
 
-    if let Some(root) = &opts.codex_root {
-        if root.exists() {
-            let sessions = codex::scan(root, opts.since_mtime_ms);
-            for s in sessions {
-                if db.has_session(&s.session.id, s.source_mtime_ms)? {
-                    skipped += 1;
-                    continue;
-                }
-                match index_session(&mut db, s.session, s.turns) {
-                    Ok(_) => ingested += 1,
-                    Err(_) => errors += 1,
-                }
-            }
-        }
-    }
-
-    if let Some(oc_path) = &opts.opencode_db {
-        if oc_path.exists() {
-            match opencode::ingest_db(oc_path) {
-                Ok(sessions) => {
-                    for s in sessions {
-                        if db.has_session(&s.session.id, s.source_mtime_ms)? {
-                            skipped += 1;
-                            continue;
-                        }
-                        match index_session(&mut db, s.session, s.turns) {
-                            Ok(_) => ingested += 1,
-                            Err(_) => errors += 1,
-                        }
-                    }
-                }
-                Err(_) => errors += 1,
-            }
-        }
-    }
-
-    Ok(IndexResult { ingested, skipped, errors })
+    Ok(result)
 }
 
 fn index_session(db: &mut Db, session: crate::domain::Session, turns: Vec<crate::domain::Turn>) -> Result<()> {
@@ -114,8 +106,6 @@ fn index_session(db: &mut Db, session: crate::domain::Session, turns: Vec<crate:
 }
 
 pub fn ensure_db_dir(path: &Path) -> Result<()> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
+    path.parent().map(std::fs::create_dir_all).transpose()?;
     Ok(())
 }

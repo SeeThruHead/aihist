@@ -40,20 +40,20 @@ pub fn run(db: &Db, session_id: &str, json: bool) -> Result<()> {
         return Ok(());
     }
 
-    for t in &turns {
+    turns.iter().for_each(|t| {
         let label = match t.role.as_str() {
-            "user" => "USER",
-            "assistant" => "ASST",
-            "tool_use" => "TOOL",
+            "user"        => "USER",
+            "assistant"   => "ASST",
+            "tool_use"    => "TOOL",
             "tool_result" => " OUT",
-            _ => "    ",
+            _             => "    ",
         };
         let tool_suffix = t.tool_name.as_deref().map(|n| format!(" [{n}]")).unwrap_or_default();
-        println!("── #{} {}{} ──────────────────────", t.seq, label, tool_suffix);
         let preview = if t.content.len() > 500 { format!("{}…", &t.content[..500]) } else { t.content.clone() };
+        println!("── #{} {}{} ──────────────────────", t.seq, label, tool_suffix);
         println!("{preview}");
         println!();
-    }
+    });
 
     Ok(())
 }
