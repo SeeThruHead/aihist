@@ -1,0 +1,5 @@
+{"type":"mode","mode":"normal","sessionId":"abc123"}
+{"type":"user","message":{"role":"user","content":"list the files in this directory"},"timestamp":"2026-09-01T10:00:00.000Z","sessionId":"abc123","cwd":"/Users/test/myproject","gitBranch":"main","version":"2.1.0"}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Sure, I'll list the files for you."},{"type":"tool_use","id":"toolu_1","name":"Bash","input":{"command":"ls -la","description":"List files"}}],"usage":{"input_tokens":42,"output_tokens":28},"model":"claude-opus-5"},"timestamp":"2026-09-01T10:00:01.000Z","sessionId":"abc123"}
+{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_1","content":"total 8\ndrwxr-xr-x 3 user staff 96 Sep 1 10:00 .\n-rw-r--r-- 1 user staff 42 Sep 1 10:00 README.md"}]},"timestamp":"2026-09-01T10:00:02.000Z","sessionId":"abc123"}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"The directory contains README.md."}],"usage":{"input_tokens":80,"output_tokens":12},"model":"claude-opus-5"},"timestamp":"2026-09-01T10:00:03.000Z","sessionId":"abc123"}
