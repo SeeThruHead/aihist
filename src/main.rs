@@ -147,15 +147,18 @@ fn main() -> Result<()> {
         }
 
         Command::InstallSkills { skills_dir } => {
-            let installed = install_skills::run(skills_dir.as_deref())?;
+            let results = install_skills::run(skills_dir.as_deref())?;
             if cli.json {
-                let json = serde_json::to_string_pretty(&installed)?;
-                println!("{json}");
+                println!("{}", serde_json::to_string_pretty(&results)?);
             } else {
-                for path in &installed {
-                    println!("installed {path}");
+                for r in &results {
+                    for path in &r.installed {
+                        println!("[{}] installed {path}", r.harness);
+                    }
                 }
-                println!("Done. {} skill(s) installed.", installed.len());
+                let total: usize = results.iter().map(|r| r.installed.len()).sum();
+                let harnesses: Vec<&str> = results.iter().map(|r| r.harness.as_str()).collect();
+                println!("Done. {} skill(s) installed across: {}", total, harnesses.join(", "));
             }
         }
     }
