@@ -11,6 +11,8 @@ pub enum DbError {
     UnknownTool(String),
     #[error("unknown role: {0}")]
     UnknownRole(String),
+    #[error("session id {0} is ambiguous, matches: {1}")]
+    AmbiguousSession(String, String),
 }
 
 const INIT_SQL: &str = "
@@ -149,6 +151,24 @@ impl Db {
         })
         .collect::<Result<Vec<_>, _>>()
         .map_err(DbError::Sqlite)
+    }
+
+    pub fn resolve_session_id(&self, id: &str) -> Result<String, DbError> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id FROM session
+             WHERE id = ?1 OR substr(id, 1, length(?1)) = ?1
+                OR substr(id, instr(id, ':') + 1, length(?1)) = ?1
+             ORDER BY (id = ?1) DESC, id LIMIT 6",
+        )?;
+        let ids = stmt
+            .query_map(params![id], |row| row.get::<_, String>(0))?
+            .collect::<Result<Vec<_>, _>>()?;
+        match ids.as_slice() {
+            [] => Ok(id.to_owned()),
+            [only] => Ok(only.clone()),
+            [first, ..] if first == id => Ok(first.clone()),
+            many => Err(DbError::AmbiguousSession(id.to_owned(), many.join(", "))),
+        }
     }
 
     pub fn turns(&self, session_id: &str) -> Result<Vec<Turn>, DbError> {
@@ -378,6 +398,18 @@ mod tests {
         assert_eq!(retrieved[0].role, Role::User);
         assert_eq!(retrieved[0].content, "hello world");
         assert_eq!(retrieved[1].role, Role::Assistant);
+    }
+
+    #[test]
+    fn resolve_session_id_accepts_prefixes_with_or_without_tool() {
+        let mut db = Db::open_in_memory().unwrap();
+        db.upsert_session(&make_session("claude:220f7528-c2e6", Tool::Claude)).unwrap();
+        db.upsert_session(&make_session("claude:47f31aaa-0000", Tool::Claude)).unwrap();
+        assert_eq!(db.resolve_session_id("claude:220f7").unwrap(), "claude:220f7528-c2e6");
+        assert_eq!(db.resolve_session_id("220f7528").unwrap(), "claude:220f7528-c2e6");
+        assert_eq!(db.resolve_session_id("claude:220f7528-c2e6").unwrap(), "claude:220f7528-c2e6");
+        assert_eq!(db.resolve_session_id("nope").unwrap(), "nope");
+        assert!(matches!(db.resolve_session_id("claude:"), Err(DbError::AmbiguousSession(..))));
     }
 
     #[test]

@@ -28,7 +28,8 @@ impl From<Turn> for TurnRow {
 }
 
 pub fn run(db: &Db, session_id: &str, json: bool) -> Result<()> {
-    let turns: Vec<TurnRow> = db.turns(session_id)?.into_iter().map(TurnRow::from).collect();
+    let session_id = db.resolve_session_id(session_id)?;
+    let turns: Vec<TurnRow> = db.turns(&session_id)?.into_iter().map(TurnRow::from).collect();
 
     if json {
         println!("{}", serde_json::to_string_pretty(&turns)?);
@@ -49,7 +50,7 @@ pub fn run(db: &Db, session_id: &str, json: bool) -> Result<()> {
             _             => "    ",
         };
         let tool_suffix = t.tool_name.as_deref().map(|n| format!(" [{n}]")).unwrap_or_default();
-        let preview = if t.content.len() > 500 { format!("{}…", &t.content[..500]) } else { t.content.clone() };
+        let preview = crate::text::preview(&t.content, 500);
         println!("── #{} {}{} ──────────────────────", t.seq, label, tool_suffix);
         println!("{preview}");
         println!();

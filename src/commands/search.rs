@@ -47,8 +47,7 @@ pub fn run(db: &Db, query: &str, filter: &Filter, json: bool) -> Result<()> {
     }
 
     hits.iter().for_each(|h| {
-        let id_short = if h.session_id.len() > 16 { &h.session_id[..16] } else { &h.session_id };
-        println!("[{}] {} turn#{} ({})", h.tool, id_short, h.seq, h.role);
+        println!("[{}] {} turn#{} ({})", h.tool, h.session_id, h.seq, h.role);
         println!("  {}", h.snippet);
         println!();
     });
